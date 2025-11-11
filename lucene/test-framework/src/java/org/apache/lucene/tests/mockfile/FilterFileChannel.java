@@ -17,6 +17,8 @@
 package org.apache.lucene.tests.mockfile;
 
 import java.io.IOException;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
@@ -126,6 +128,11 @@ public abstract class FilterFileChannel extends FileChannel {
   @Override
   public FileLock tryLock(long position, long size, boolean shared) throws IOException {
     return delegate.tryLock(position, size, shared);
+  }
+
+  @Override
+  public MemorySegment map(FileChannel.MapMode mode, long offset, long size, Arena arena) throws IOException {
+    return delegate.map(mode, offset, size, arena);
   }
 
   @Override
