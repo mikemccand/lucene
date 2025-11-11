@@ -51,28 +51,31 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
     super.tearDown();
   }
 
-  @Test
   public void testEmpty() {
     assertEquals(0, h.size());
     assertEquals(-1, h.find(new BytesRef()));
   }
 
-  @Test
-  public void testAddAndFindUniq() {
-    int N = atLeast(1000);
-    List<BytesRef> refs = new ArrayList<>(N);
-    for (int i = 0; i < N; i++) {
+  private List<BytesRef> getNUniqueByteRefs(int n) {
+    Set<BytesRef> refs = new HashSet<>(n);
+    // keep iterating until we see exactly n unique:
+    for (int i = 0; refs.size() < n; i++) {
       refs.add(randomBytesRef(i % 64));
     }
+    return new ArrayList<>(refs);
+  }
+
+  public void testAddAndFindUniq() {
+    int N = atLeast(1000);
+    List<BytesRef> refs_list = getNUniqueByteRefs(N);
     for (int i = 0; i < N; i++) {
-      int ord = h.add(refs.get(i));
+      int ord = h.add(refs_list.get(i));
       assertEquals(i, ord);
-      assertEquals(i, h.find(refs.get(i)));
+      assertEquals(i, h.find(refs_list.get(i)));
     }
     assertEquals(N, h.size());
   }
 
-  @Test
   public void testDuplicatesReturnNegativeOrd() {
     BytesRef a = new BytesRef(new byte[]{1,2,3,4});
     int ord = h.add(a);
@@ -82,13 +85,11 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
     assertEquals(ord, h.find(a));
   }
 
-  @Test
   public void testGetRoundTrip() {
     int N = atLeast(500);
-    List<BytesRef> refs = new ArrayList<>(N);
-    for (int i = 0; i < N; i++) {
-      refs.add(randomBytesRef(1 + random().nextInt(200)));
-      h.add(refs.get(i));
+    List<BytesRef> refs = getNUniqueByteRefs(N);
+    for (BytesRef br : refs) {
+      h.add(br);
     }
     BytesRef scratch = new BytesRef();
     for (int i = 0; i < N; i++) {
@@ -97,7 +98,6 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
     }
   }
 
-  @Test
   public void testCompactContainsAllOrds() {
     for (int i = 0; i < 257; i++) {
       h.add(new BytesRef(("k" + i).getBytes(StandardCharsets.UTF_8)));
@@ -112,7 +112,6 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
     }
   }
 
-  @Test
   public void testClearAndReuse() {
     h.add(new BytesRef("abc".getBytes(StandardCharsets.UTF_8)));
     h.add(new BytesRef("def".getBytes(StandardCharsets.UTF_8)));
@@ -123,7 +122,6 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
     assertTrue(h.add(new BytesRef("abc".getBytes(StandardCharsets.UTF_8))) >= 0);
   }
 
-  @Test
   public void testLengthHeaderBoundaries() {
     // 1-byte header (<128), 2-byte header (>=128), and the max 32767
     for (int len : new int[]{0, 1, 2, 63, 127, 128, 1024, 8191, 32767}) {
@@ -135,7 +133,6 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
     }
   }
 
-  @Test
   public void testTooLongThrows() {
     byte[] b = new byte[32768];
     expectThrows(OffHeapBytesRefHash.MaxBytesLengthExceededException.class, () -> {
@@ -143,7 +140,6 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
     });
   }
 
-  @Test
   public void testRandomAddsWithCollisions() {
     int N = atLeast(2000);
     Set<BytesRef> seen = new HashSet<>();
@@ -167,7 +163,6 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
     }
   }
 
-  @Test
   public void testRamBytesUsedIsStable() {
     long before = h.ramBytesUsed();
     for (int i = 0; i < 512; i++) {
@@ -184,11 +179,10 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
    * and verifies lookups and random spot-check retrievals. Annotated as a Monster
    * test so it only runs under -Dtests.monster=true.
    */
-  @Test
-  @Category(Monster.class)
+  @Monster("takes a minute or two and > 2 GB disk free on test temp dir")
   public void test2GBPlusTotalBytes() throws Exception {
-    // Use a larger initial hash to reduce rehash churn
-    try (OffHeapBytesRefHash big = new OffHeapBytesRefHash(1 << 18, createTempDir("offheap-2gb"))) {
+    // use default size hash to exercise rehashing / growing mapped off-heap temp file
+    try (OffHeapBytesRefHash big = new OffHeapBytesRefHash(createTempDir("offheap-2gb"))) {
 
       final long TARGET = (2L << 30) + (64L << 20); // 2 GiB + 64 MiB buffer
       final int FIXED_LEN = 32000;                  // < 32768, forces 2-byte header
@@ -299,13 +293,14 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
       int i = 0;
       for (int v : set) out[i++] = v;
       return out;
+    } else {
+      // large count → shuffle a list of the range and take first N
+      ArrayList<Integer> list = new ArrayList<>(span);
+      for (int v = minInclusive; v < maxExclusive; v++) list.add(v);
+      Collections.shuffle(list, r);
+      int[] out = new int[count];
+      for (int i = 0; i < count; i++) out[i] = list.get(i);
+      return out;
     }
-    // large count → shuffle a list of the range and take first N
-    ArrayList<Integer> list = new ArrayList<>(span);
-    for (int v = minInclusive; v < maxExclusive; v++) list.add(v);
-    Collections.shuffle(list, r);
-    int[] out = new int[count];
-    for (int i = 0; i < count; i++) out[i] = list.get(i);
-    return out;
   }
 }

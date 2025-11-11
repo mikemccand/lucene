@@ -48,10 +48,10 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
   private int hashHalfSize;
   private int hashMask;
 
-  /** Mask for the high bits of the hashcode kept inside ids[]. */
+  /** Mask for the high bits of the hashCode kept inside ids[]. */
   private int highMask;
 
-  /** -1 for empty; otherwise stores (ord | (hashcode & highMask)). */
+  /** -1 for empty; otherwise stores (ord | (hashCode & highMask)). */
   private int[] ids;
 
   /** Offsets into off-heap storage (pointing at the vint length header). */
@@ -64,10 +64,6 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
 
   private final OffHeapFile pool;
 
-  // --- accounting ---
-
-  private final Counter bytesUsed = Counter.newCounter(); // match BytesRefHash style
-
   /** Max allowed length for a single BytesRef payload. */
   private static final int MAX_VALUE_LENGTH = 32767; // 0x7FFF
 
@@ -79,9 +75,19 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
     this(INIT_HASH_SIZE, null);
   }
 
+  /** Create with provided capacity. */
+  public OffHeapBytesRefHash(int initialHashSize) throws IOException {
+    this(initialHashSize, null);
+  }
+
+  /** Create with default capacity in provided temp directory. */
+  public OffHeapBytesRefHash(Path tmpDir) throws IOException {
+    this(INIT_HASH_SIZE, tmpDir);
+  }
+
   /**
-   * Create with an initial hash capacity (power of two preferred), temp file in given dir or
-   * default.
+   * Create with an initial hash capacity (which will be rounded up to power of two),
+   * temp file in given dir or default (null).
    */
   public OffHeapBytesRefHash(int initialHashSize, Path tmpDir) throws IOException {
     if (initialHashSize < 2) {
@@ -124,18 +130,21 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
     if (bytes.length > MAX_VALUE_LENGTH) {
       throw new MaxBytesLengthExceededException("length=" + bytes.length + " >= " + MAX_VALUE_LENGTH);
     }
-    final int hashcode = doHash(bytes.bytes, bytes.offset, bytes.length);
-    final int hashPos = findHash(bytes, hashcode);
+    //System.out.println("ADD: " + bytes.length);
+    int hashCode = doHash(bytes);
+    //System.out.println("  hashCode=" + hashCode + " highMask=" + Integer.toBinaryString(highMask));
+    int hashPos = findHash(bytes, hashCode);
+    //System.out.println("  hashPos=" + hashPos);
     int e = ids[hashPos];
 
     if (e == -1) {
       // new entry: append to off-heap, record ordinal, store high hash bits in ids
-      final long addr = pool.addBytesRef(bytes);
+      long addr = pool.addBytesRef(bytes);
       ensureBytesStartCapacity(count + 1);
       bytesStart[count] = addr;
 
       e = count++;
-      ids[hashPos] = e | (hashcode & highMask);
+      ids[hashPos] = e | (hashCode & highMask);
 
       if (count == hashHalfSize) {
         // nocommit to truly be able to max out hash we need to not double at the very end?
@@ -152,8 +161,9 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
 
   /** Return the ordinal for the given BytesRef or -1 if not present. */
   public int find(BytesRef bytes) {
-    final int hashcode = doHash(bytes.bytes, bytes.offset, bytes.length);
-    final int id = ids[findHash(bytes, hashcode)];
+    int hashCode = doHash(bytes);
+    //System.out.println("hashCode=" + hashCode);
+    int id = ids[findHash(bytes, hashCode)];
     return id == -1 ? -1 : id & hashMask;
   }
 
@@ -218,28 +228,29 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
   // ---------------- internal methods ----------------
 
   private void ensureBytesStartCapacity(int min) {
-    if (min <= bytesStart.length) return;
-    bytesUsed.addAndGet((min - bytesStart.length) * (long) Long.BYTES);
-    bytesStart = ArrayUtil.grow(bytesStart, min);
+    if (min > bytesStart.length) {
+      bytesStart = ArrayUtil.grow(bytesStart, min);
+    }
   }
 
-  private static int doHash(byte[] bytes, int offset, int len) {
-    // same hash as BytesRefHash
-    return StringHelper.murmurhash3_x86_32(bytes, offset, len, 0);
+  private static int doHash(BytesRef bytes) {
+    return StringHelper.murmurhash3_x86_32(bytes.bytes, bytes.offset, bytes.length, StringHelper.GOOD_FAST_HASH_SEED);
   }
 
   /**
-   * Probe to find slot for given BytesRef/hashcode; uses cached high bits to skip mismatches fast.
+   * Probe to find slot for given BytesRef/hashCode; uses cached high bits to skip mismatches fast.
    */
-  private int findHash(BytesRef bytes, int hashcode) {
-    assert hashcode == doHash(bytes.bytes, bytes.offset, bytes.length);
-    int code = hashcode;
+  private int findHash(BytesRef bytes, int hashCode) {
+    assert hashCode == doHash(bytes);
+    int code = hashCode;
     int pos = code & hashMask;
     int e = ids[pos];
-
-    final int highBits = hashcode & highMask;
-    while (e != -1
-        && ((e & highMask) != highBits || pool.equals(bytesStart[e & hashMask], bytes) == false)) {
+    int highBits = hashCode & highMask;
+    if (e != -1) {
+      //System.out.println("bytesStart=" + bytesStart[e & hashMask]);
+      //System.out.println("  initial pos=" + pos + " e=" + e + " highBits=" + highBits + " higheq=" + ((e & highMask) == highBits) + " pooleq=" + pool.equals(bytesStart[e & hashMask], bytes));
+    }
+    while (e != -1 && ((e & highMask) != highBits || pool.equals(bytesStart[e & hashMask], bytes) == false)) {
       code++;
       pos = code & hashMask;
       e = ids[pos];
@@ -253,17 +264,19 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
     final int[] newHash = new int[newSize];
     Arrays.fill(newHash, -1);
 
+
+    System.out.println("rehash to " + newSize);
     for (int i = 0; i < hashSize; i++) {
       int e0 = ids[i];
       if (e0 != -1) {
         e0 &= hashMask; // strip cached hash bits to recover the ordinal
 
-        final int hashcode;
+        final int hashCode;
         int code;
         if (hashOnData) {
-          hashcode = code = pool.hash(bytesStart[e0]);
+          hashCode = code = pool.hash(bytesStart[e0]);
         } else {
-          hashcode = 0;
+          hashCode = 0;
           code = (int) (bytesStart[e0] ^ (bytesStart[e0] >>> 32)); // fallback, not used in practice
         }
 
@@ -272,7 +285,7 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
           code++;
           pos = code & newMask;
         }
-        newHash[pos] = e0 | (hashcode & newHighMask);
+        newHash[pos] = e0 | (hashCode & newHighMask);
       }
     }
 
@@ -306,13 +319,13 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
               dir == null ? Path.of(System.getProperty("java.io.tmpdir")) : dir,
               "offheap-bytesrefhash",
               ".bin");
-      System.out.println("temp path=" + this.path);
+      //System.out.println("temp path=" + this.path);
       this.ch = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.DELETE_ON_CLOSE);
       /*
       this.ch =
         new RandomAccessFile(path.toString(), "rw").getChannel();
       */
-      System.out.println("opened " + this.ch);
+      //System.out.println("opened " + this.ch);
       mapToCapacity(Math.max(1 << 20, 4096)); // start with 1 MB
     }
 
@@ -327,6 +340,7 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
     void clear() {
       writePos = 0L;
       // data remains; logically cleared
+      // TODO: should we tell OS to truncate the file, and lower capacity?
     }
 
     long addBytesRef(BytesRef br) {
@@ -355,10 +369,11 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
     }
 
     boolean equals(long addr, BytesRef candidate) {
-      int[] lh = readLenHeader(mapped, addr);
-      int len = lh[0];
+      LenHeader header = readLenHeader(mapped, addr);
+      int len = header.length;
+      //System.out.println("  equals len=" + header.length + " nb=" + header.numBytes);
       if (len != candidate.length) return false;
-      long p = addr + lh[1];
+      long p = addr + header.numBytes;
       byte[] b = candidate.bytes;
       int off = candidate.offset;
       for (int i = 0; i < len; i++) {
@@ -369,9 +384,9 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
     }
 
     void get(long addr, BytesRef out) {
-      int[] lh = readLenHeader(mapped, addr);
-      int len = lh[0];
-      long p = addr + lh[1];
+      LenHeader header = readLenHeader(mapped, addr);
+      int len = header.length;
+      long p = addr + header.numBytes;
       if (out.bytes == null || out.bytes.length < len) {
         out.bytes = new byte[ArrayUtil.oversize(len, 1)];
       }
@@ -383,15 +398,15 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
     }
 
     int hash(long addr) {
-      int[] lh = readLenHeader(mapped, addr);
-      int len = lh[0];
-      long p = addr + lh[1];
+      LenHeader header = readLenHeader(mapped, addr);
+      int len = header.length;
+      long p = addr + header.numBytes;
       // copy into temp array for StringHelper.murmurhash3_x86_32
       byte[] tmp = new byte[len];
       for (int i = 0; i < len; i++) {
         tmp[i] = mapped.get(ValueLayout.JAVA_BYTE, p + i);
       }
-      return StringHelper.murmurhash3_x86_32(tmp, 0, len, 0);
+      return StringHelper.murmurhash3_x86_32(tmp, 0, len, StringHelper.GOOD_FAST_HASH_SEED);
     }
 
     private void ensureCapacity(long min) throws OutOfMemoryError {
@@ -406,20 +421,21 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
 
     private void mapToCapacity(long newCap) throws IOException {
       // extend file
+      System.out.println("grow map to " + newCap);
       if (ch.size() < newCap) {
         // reliably grow: position and write one byte -- how nice it has to have a file system abstraction to manage this storage!
-        System.out.println("extend " + ch.size() + " to " + (newCap-1));
+        //System.out.println("extend " + ch.size() + " to " + (newCap-1));
         ch.position(newCap - 1);
         ch.write(ByteBuffer.wrap(new byte[] {0}));
-        System.out.println("size now " + ch.size());
+        //System.out.println("size now " + ch.size());
       }
       // remap
       if (arena != null) {
-        System.out.println("close old arena");
+        //System.out.println("close old arena");
         arena.close(); // unmap old segment
       }
       arena = Arena.ofConfined();
-      System.out.println("map capacity=" + capacity + " newCap=" + newCap);
+      //System.out.println("map capacity=" + capacity + " newCap=" + newCap);
       mapped = ch.map(FileChannel.MapMode.READ_WRITE, 0L, newCap, arena);
       capacity = newCap;
     }
@@ -472,22 +488,20 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
       }
     }
 
-    /** Decode header at pos, returning {length, headerByteCount}. */
-    private int[] readLenHeader(MemorySegment seg, long pos) {
+    private record LenHeader(int length, int numBytes) {};
+
+    private LenHeader readLenHeader(MemorySegment seg, long pos) {
       int b0 = seg.get(ValueLayout.JAVA_BYTE, pos) & 0xFF;
       if ((b0 & 0x80) == 0) {
-        return new int[] {b0, 1};
+        return new LenHeader(b0, 1);
       } else {
         int b1 = seg.get(ValueLayout.JAVA_BYTE, pos + 1) & 0xFF;
         int len = ((b0 & 0x7F) << 8) | b1;
-        return new int[] {len, 2};
+        return new LenHeader(len, 2);
       }
     }
   }
 
-  // ---------------- exceptions ----------------
-
-  /** Mirrors BytesRefHash.MaxBytesLengthExceededException behavior/message. */
   public static class MaxBytesLengthExceededException extends IllegalArgumentException {
     public MaxBytesLengthExceededException(String msg) {
       super(msg);
