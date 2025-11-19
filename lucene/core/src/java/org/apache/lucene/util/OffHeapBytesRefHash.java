@@ -147,6 +147,7 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
       ids[hashPos] = e | (hashCode & highMask);
 
       if (count == hashHalfSize) {
+        // nocommit enable gradual growth -- ArrayUtil.grow, except, relatively prime so hashing "works"
         // nocommit to truly be able to max out hash we need to not double at the very end?
         //   or we paginate the hash arrays
         rehash(hashSize << 1, true);

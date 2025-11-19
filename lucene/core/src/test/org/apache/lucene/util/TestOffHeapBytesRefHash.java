@@ -184,7 +184,7 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
     // use default size hash to exercise rehashing / growing mapped off-heap temp file
     try (OffHeapBytesRefHash big = new OffHeapBytesRefHash(createTempDir("offheap-2gb"))) {
 
-      final long TARGET = (2L << 30) + (64L << 20); // 2 GiB + 64 MiB buffer
+      final long TARGET = (2L << 31) + (64L << 20); // 4 GiB + 64 MiB buffer
       final int FIXED_LEN = 32000;                  // < 32768, forces 2-byte header
       final int HEADER = 2;                         // because len >= 128
       final int STEP_BYTES = FIXED_LEN + HEADER;
@@ -203,10 +203,13 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
       int[] sampleOrds = new int[SAMPLE];
       int sampleCount = 0;
 
+      // make sure reuse is OK
+      byte[] buf = new byte[FIXED_LEN];
+      BytesRef br = new BytesRef(buf);
+
       // Advance until actual written bytes exceed target
       int i = 0;
       while (big.offHeapBytesUsed() < TARGET) {
-        byte[] buf = new byte[FIXED_LEN];
         // Make content deterministic but varying, not compressible pattern
         int seed = i * 2654435761L != 0 ? i : 1;
         for (int k = 0; k < FIXED_LEN; k++) {
@@ -216,7 +219,6 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
           seed ^= (seed << 5);
           buf[k] = (byte) seed;
         }
-        BytesRef br = new BytesRef(buf);
         int ord = big.add(br);
         if ((i & SAMPLE_MASK) == 0) { // light sampling
           sampleVals[sampleCount & SAMPLE_MASK] = BytesRef.deepCopyOf(br);
@@ -247,7 +249,7 @@ public class TestOffHeapBytesRefHash extends LuceneTestCase {
       for (int s = 0; s < checks; s++) {
         int ord = sampleOrds[s];
         big.get(ord, scratch);
-        assertArrayEquals(copyBytes(sampleVals[s]), copyBytes(scratch));
+        assertEquals(copyBytes(sampleVals[s]), copyBytes(scratch));
         assertEquals(ord, big.find(sampleVals[s]));
       }
 
