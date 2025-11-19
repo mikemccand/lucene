@@ -163,16 +163,24 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
   /** Return the ordinal for the given BytesRef or -1 if not present. */
   public int find(BytesRef bytes) {
     int hashCode = doHash(bytes);
-    //System.out.println("hashCode=" + hashCode);
     int id = ids[findHash(bytes, hashCode)];
-    return id == -1 ? -1 : id & hashMask;
+    if (id == -1) {
+      return -1;
+    } else {
+      return id & hashMask;
+    }
   }
 
   /**
-   * Copy bytes for the given ordinal into {@code out}. {@code out.bytes} will be grown and {@code
-   * out.offset} set to 0.
+   * Populates and returns a {@link BytesRef} with the bytes for the given ord.
+   *
+   * <p>Note: the given ord must be valid (&gt;= 0 and &lt; current {@link #size()})
+   *
+   * @param ord the ord previously returned by {@link #add(BytesRef)}
+   * @param out the {@link BytesRef} to populate
+   * @return the given BytesRef instance populated with the bytes for the given ord
    */
-  public void get(int ord, BytesRef out) {
+  public BytesRef get(int ord, BytesRef out) {
     checkOrd(ord);
     pool.get(bytesStart[ord], out);
   }
@@ -185,15 +193,17 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
     int[] result = new int[count];
     int upto = 0;
     for (int i = 0; i < hashSize; i++) {
-      final int v = ids[i];
+      int v = ids[i];
       if (v != -1) {
         result[upto++] = v & hashMask;
       }
     }
+    
     if (upto != count) {
-      // shouldn't happen, but be safe
-      result = Arrays.copyOf(result, upto);
+      // paranoia
+      throw new AssertionError("hash table was supposed to have " + count + " elements, but only saw " + upto);
     }
+    
     return result;
   }
 
@@ -315,9 +325,15 @@ public final class OffHeapBytesRefHash implements Accountable, Closeable {
     private long writePos; // append pointer
 
     OffHeapFile(Path dir) throws IOException {
+      Path tempDir;
+      if (dir == null) {
+        tempDir = Path.of(System.getProperty("java.io.tmpdir"));
+      } else {
+        tempDir = dir;
+      }
       this.path =
           Files.createTempFile(
-              dir == null ? Path.of(System.getProperty("java.io.tmpdir")) : dir,
+              tempDir,
               "offheap-bytesrefhash",
               ".bin");
       //System.out.println("temp path=" + this.path);
